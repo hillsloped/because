@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Because</title>
+<style>
+  :root {
+    --bg: #f2efe6;
+    --ink: #161616;
+    --panel: #ffffff;
+    --accent: #ff5a1f;
+    --muted: #6b6b6b;
+    --off: #d6d6d6;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    min-height: 100vh;
+  }
+  header {
+    background: var(--ink);
+    color: var(--bg);
+    padding: 18px 24px;
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+  }
+  header h1 { font-size: 30px; letter-spacing: -0.5px; }
+  header span { color: #a8a8a8; font-size: 13px; }
+  main {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 24px;
+    display: grid;
+    gap: 28px;
+  }
+  .stage {
+    background: var(--panel);
+    border: 2px solid var(--ink);
+    padding: 16px;
+    display: grid;
+    gap: 14px;
+  }
+  .screen { width: 100%; aspect-ratio: 16 / 9; background: var(--ink); }
+  .screen canvas, .screen video { width: 100%; height: 100%; display: block; background: var(--ink); }
+  [hidden] { display: none !important; }
+  .bar { height: 8px; background: #e6e6e6; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); }
+  .controls { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+  button {
+    font: inherit;
+    font-weight: 700;
+    border: 2px solid var(--ink);
+    background: var(--panel);
+    color: var(--ink);
+    padding: 10px 16px;
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { background: var(--bg); }
+  button.primary { background: var(--accent); color: #ffffff; font-size: 18px; padding: 12px 30px; }
+  button.primary:hover:not(:disabled) { background: var(--ink); }
+  button:disabled { background: var(--off); color: #8a8a8a; cursor: not-allowed; }
+  .status { color: var(--muted); font-size: 14px; }
+  .details { font-size: 14px; display: grid; gap: 8px; }
+  .details .head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-weight: 700; }
+  .swatch { width: 18px; height: 18px; border: 2px solid var(--ink); display: inline-block; }
+  .pieces { list-style: none; display: grid; gap: 4px; }
+  .pieces li { display: flex; gap: 12px; }
+  .pieces .t { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 112px; flex-shrink: 0; }
+  h2 { font-size: 20px; display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 12px; }
+  h2 small { font-size: 14px; color: var(--muted); font-weight: 400; }
+  .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; }
+  .card { background: var(--panel); border: 2px solid var(--ink); display: grid; }
+  .card.active { border-color: var(--accent); box-shadow: none; outline: 3px solid var(--accent); }
+  .thumb {
+    aspect-ratio: 16 / 9;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 10px;
+    font-weight: 700;
+    font-size: 14px;
+    line-height: 1.2;
+    cursor: pointer;
+    overflow: hidden;
+    word-break: break-word;
+  }
+  .meta {
+    padding: 8px;
+    font-size: 12px;
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+    border-top: 2px solid var(--ink);
+  }
+  .meta b { color: var(--ink); }
+  .row { display: flex; border-top: 2px solid var(--ink); }
+  .row button { flex: 1; border: 0; padding: 8px; font-size: 13px; }
+  .row button + button { border-left: 2px solid var(--ink); }
+  .empty { color: var(--muted); font-size: 14px; }
+  footer { max-width: 1000px; margin: 0 auto; padding: 0 24px 32px; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Because</h1>
+  <span>v0.1 · simple video maker</span>
+</header>
+
+<main>
+  <section class="stage">
+    <div class="screen">
+      <canvas id="canvas" width="960" height="540"></canvas>
+      <video id="video" hidden playsinline loop controls></video>
+    </div>
+    <div class="bar" id="bar"><div></div></div>
+    <div class="controls">
+      <button class="primary" id="generate">Generate</button>
+      <span class="status" id="status">Press Generate to make a video.</span>
+    </div>
+    <div class="details" id="details"></div>
+  </section>
+
+  <section>
+    <h2><span>Gallery</span><small id="count">0 / 20</small></h2>
+    <div class="gallery" id="gallery"></div>
+  </section>
+</main>
+
+<footer id="footer"></footer>
+
+<script>
+/* ============================================================
+   Because v0.1
+   ============================================================ */
+
+const W = 960, H = 540, FPS = 30;
+const MIN_SECONDS = 2, MAX_SECONDS = 15;
+const MAX_GALLERY = 20;
+
+/* ---------- Reference sentences (200) ---------- */
+const REFERENCE = [
+  "The sky is doing its best today.", "I forgot why I walked in here.", "Every cloud is a little bit lost.",
+  "The cat knows something we do not.", "Please hold while the toast thinks.", "This is fine, probably.",
+  "Nobody asked the moon for permission.", "I made soup and the soup made me.", "Turn left at the loud duck.",
+  "The window is open because of reasons.", "Somewhere a sock is waiting for you.", "The chair has been here longer than you.",
+  "We tried our best and got a sandwich.", "Do not trust the stairs on a Tuesday.", "Hello again, strange little friend.",
+  "The fridge hums a song only it knows.", "It was raining sideways for a minute.", "My plan is to have a plan later.",
+  "The bus came early and nobody was ready.", "I think the lamp is judging me.", "Water is just wet air that gave up.",
+  "Time is moving at the usual speed.", "Be kind to the small rocks.", "The answer was in the other pocket.",
+  "A bird sat down and stayed a while.", "Everything is loading, please wait.", "The pancake flipped itself.",
+  "I can hear the color blue.", "That door goes nowhere, and that is okay.", "The tree waved back at me.",
+  "Some days the bread is just bread.", "We are all a little bit potato.", "The mountain did not move, but I did.",
+  "I left my thoughts in the car.", "Breakfast is a state of mind.", "Look up, the ceiling is still there.",
+  "Nothing happened, and it was great.", "The wind borrowed my hat.", "This video is brought to you by because.",
+  "Why is the spoon so confident?", "The snow forgot to melt.", "Keep going, the end is somewhere.",
+  "My shoes have seen things.", "One day the clock will rest.", "The pigeon has a business meeting.",
+  "Please do not feed the thoughts.", "It smells like a Thursday in here.", "The ocean called but I was busy.",
+  "Small steps, big snacks.", "The paper airplane never came back.", "Everything is round if you squint.",
+  "A quiet room is never really quiet.", "Your call is important to the void.", "The grass is green on every side.",
+  "Someone left the sun on again.", "This is the part where we wait.", "The moon is just a night light.",
+  "I counted to ten and lost track.", "The milk has made its decision.", "Dance like the floor is listening.",
+  "Here comes the big nothing.", "The goat has opinions.", "Today is brought to you by gravity.",
+  "I told the plant a secret.", "The road goes on, and so do we.", "Hold the door, the idea is coming.",
+  "There is a frog in every story.", "The cookie crumbled on purpose.", "Even the shadows need a break.",
+  "Life is short, the line is long.", "The sandwich was a mistake I would make again.", "A good day starts with a weird noise.",
+  "The lights flickered once, politely.", "Where do the lost pens go?", "The hallway is longer at night.",
+  "Clouds are just sky pillows.", "I believe in the power of naps.", "The robot said thank you.",
+  "Let the noodles rest.", "This is the best worst idea.", "The candle has seen enough.",
+  "Socks are just tiny sleeping bags for feet.", "The music stopped but the feet did not.", "I wonder what the fish are thinking.",
+  "Turn it off and on again.", "The cake is still in the oven of life.", "An apple a day is a lot of apples.",
+  "The parking lot is full of dreams.", "Every pebble had a mountain once.", "I almost said something smart.",
+  "The elevator knows your secrets.", "Morning came and did not knock.", "There are too many buttons.",
+  "The kettle screamed and so did I.", "My brain has too many tabs open.", "The squirrel is the real boss.",
+  "It is what it is, and it is blue.", "Somebody stop the spinning.", "The garden grows when no one looks.",
+  "Thank you for watching nothing.", "I put the cereal in before the bowl.", "The dog has been promoted.",
+  "A train goes by in the distance.", "The sky changed its mind.", "Hope is a small orange light.",
+  "Today the wind smells like pennies.", "The library whispered back.", "We ran out of yesterday.",
+  "My reflection is running late.", "The pillow remembers everything.", "There is a party in the microwave.",
+  "The duck is not impressed.", "Just one more minute, said everyone.", "The map was upside down the whole time.",
+  "Rain is the sky saying hello.", "My hands are full of maybe.", "The bridge is longer going home.",
+  "Every star is somebody's sun.", "The shop is closed for vibes.", "I lost the game again.",
+  "The spoon ran away with the plan.", "Listen to the hum of the lights.", "Nobody knows where the wind lives.",
+  "The puddle holds a whole sky.", "Please return to your seat.", "The soup is having a moment.",
+  "Big things start with small crumbs.", "The fan is spinning out of control.", "Sunday is a soft blanket.",
+  "I trusted the map and found a lake.", "The frog jumped into next week.", "Some songs are just loud feelings.",
+  "Be the bread you want to see.", "The cloud looked like my uncle.", "Every door is a small adventure.",
+  "The bees are working overtime.", "I am not lost, I am exploring.", "The pizza arrived before the question.",
+  "Silence is a very loud song.", "We will figure it out tomorrow.", "The phone buzzed but no one was there.",
+  "I drew a circle and it became a sun.", "The ice cream melted with dignity.", "This sentence has no point.",
+  "The owl stayed up for us.", "Bring a jacket, the vibes are cold.", "The hamster is running for office.",
+  "The sun set and then set again.", "My coffee is staring at me.", "There is no wrong way to eat a cloud.",
+  "The stars blinked in secret code.", "A small boat in a big bathtub.", "The keys were in my hand the whole time.",
+  "The tomato is a fruit with a secret.", "Every wall has a story.", "Shh, the toast is listening.",
+  "The cat sat on the important paper.", "Gravity is a clingy friend.", "The snail won the race eventually.",
+  "I meant to do that.", "The volcano is just a hot mountain.", "Here we go again, but different.",
+  "The fork is not a spoon, sadly.", "Rainbows are the sky showing off.", "The jellybean had a dream.",
+  "The sun is a giant lamp.", "Nobody reads the instructions.", "The wave said goodbye to the shore.",
+  "I think the trees are gossiping.", "The noodle is the hero of this story.", "Cold pizza is a lifestyle.",
+  "The balloon got away.", "Some dreams come with snacks.", "The broom is resting today.",
+  "A lot can happen in fifteen seconds.", "The backpack is full of tomorrow.", "The moon followed us home.",
+  "Please enjoy this colorful square.", "The giraffe saw it first.", "Everything you see is a rectangle.",
+  "The bell rang for no reason.", "I whispered to the volcano.", "We are going on a small trip.",
+  "The robot needs a hug.", "Happy birthday to someone, probably.", "The paint dried while we watched.",
+  "Clouds do not have to pay rent.", "The penguin wore a tiny tie.", "The music is too quiet to hear.",
+  "It was a dark and sparkly night.", "The answer is because.", "Why? Because.",
+  "Because the sky said so.", "Because nobody stopped it.", "Because that is how it goes.",
+  "Because we pressed the button.", "Because it felt right at the time.", "Because the cat wanted it.",
+  "Because, that is why.", "The end, or is it?"
+];
+
+/* ---------- Common words ---------- */
+const COMMON = [
+  "the", "a", "and", "is", "it", "you", "we", "they", "this", "that", "not", "very", "just", "so",
+  "maybe", "yes", "no", "why", "because", "what", "where", "when", "how", "now", "then", "again",
+  "big", "small", "red", "blue", "green", "loud", "quiet", "fast", "slow", "good", "bad", "new", "old",
+  "cat", "dog", "duck", "frog", "fish", "bird", "moon", "sun", "sky", "cloud", "rain", "tree", "rock",
+  "toast", "soup", "bread", "pizza", "spoon", "door", "chair", "lamp", "sock", "shoe", "hat", "box",
+  "run", "jump", "eat", "sleep", "think", "look", "go", "stop", "wait", "dance", "sing", "fall",
+  "today", "tomorrow", "never", "always", "here", "there", "up", "down", "inside", "outside",
+  "hello", "goodbye", "please", "thanks", "okay", "wow", "huh", "oops", "yay", "help"
+];
+
+/* Words the made-up words borrow letters from */
+const SOURCE_WORDS = [...new Set(
+  COMMON.concat(REFERENCE.join(" ").toLowerCase().split(/[^a-z']+/))
+    .map(w => w.replace(/[^a-z]/g, ""))
+    .filter(w => w.length >= 2)
+)];
+
+/* ---------- Random helpers ---------- */
+const rand = (a, b) => a + Math.random() * (b - a);
+const randInt = (a, b) => Math.floor(rand(a, b + 1));
+const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+const chance = p => Math.random() < p;
+const round1 = x => Math.round(x * 10) / 10;
+
+/* ---------- Text generator ---------- */
+
+// Take 1 or 2 letters in a row from a word
+function chunkFrom(word) {
+  const len = Math.min(randInt(1, 2), word.length);
+  const start = randInt(0, word.length - len);
+  return word.slice(start, start + len);
+}
+
+// Build a made-up word from 1-2 letter chunks of 2-3 real words
+function madeUpWord() {
+  let w = "";
+  const parts = randInt(2, 3);
+  for (let i = 0; i < parts; i++) w += chunkFrom(pick(SOURCE_WORDS));
+  if (w.length < 3) w += chunkFrom(pick(SOURCE_WORDS));
+  return w;
+}
+
+// 50/50 chance the made-up word is allowed in. Returns null if not.
+function tryMadeUp() {
+  return chance(0.5) ? madeUpWord() : null;
+}
+
+function makeText() {
+  const r = Math.random();
+
+  // 1) A whole reference sentence
+  if (r < 0.30) return pick(REFERENCE);
+
+  // 2) Part of a reference sentence
+  if (r < 0.50) {
+    const words = pick(REFERENCE).split(" ");
+    const n = Math.min(words.length, randInt(2, Math.max(2, words.length)));
+    const start = randInt(0, words.length - n);
+    return words.slice(start, start + n).join(" ");
+  }
+
+  // 3) A reference sentence with some words swapped for made-up ones
+  if (r < 0.75) {
+    return pick(REFERENCE).split(" ").map(w => {
+      if (!chance(0.3)) return w;
+      return tryMadeUp() ?? w;
+    }).join(" ");
+  }
+
+  // 4) A random jumble of common words and made-up words
+  const out = [];
+  const n = randInt(2, 6);
+  for (let i = 0; i < n; i++) {
+    if (chance(0.5)) out.push(pick(COMMON));
+    else {
+      const m = tryMadeUp();
+      if (m) out.push(m);
+    }
+  }
+  if (!out.length) out.push(pick(COMMON));
+  return out.join(" ");
+}
+
+/* ---------- Colors ---------- */
+function hslToHex(h, s, l) {
+  s /= 100; l /= 100;
+  const k = n => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = n => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+  return "#" + [f(0), f(8), f(4)].map(x => Math.round(x * 255).toString(16).padStart(2, "0")).join("");
+}
+function randomColor() {
+  return hslToHex(randInt(0, 359), randInt(35, 95), randInt(18, 82));
+}
+function textColorFor(hex) {
+  const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return lum > 0.55 ? "#111111" : "#ffffff";
+}
+
+/* ---------- The "AI": decides everything about a video ---------- */
+function generateRecipe() {
+  const duration = round1(rand(MIN_SECONDS, MAX_SECONDS));
+  const background = randomColor();
+  const pieces = [];
+
+  let t = round1(rand(0, 0.5));
+  while (duration - t >= 0.8) {
+    const len = Math.min(rand(0.8, 4), duration - t);
+    const end = Math.min(duration, round1(t + len));
+    pieces.push({ text: makeText(), start: t, end });
+    t = round1(end + rand(0, 0.6));
+  }
+  if (!pieces.length) pieces.push({ text: makeText(), start: 0, end: duration });
+
+  return { duration, background, textColor: textColorFor(background), pieces };
+}
+
+/* ---------- Drawing ---------- */
+const FONT = s => `700 ${s}px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
+
+function wrap(c, text, maxW) {
+  const words = text.split(/\s+/);
+  const lines = [];
+  let line = "";
+  for (const w of words) {
+    const test = line ? line + " " + w : w;
+    if (c.measureText(test).width > maxW && line) { lines.push(line); line = w; }
+    else line = test;
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+function fitText(c, text) {
+  const maxW = W * 0.84;
+  for (let s = 84; s >= 24; s -= 4) {
+    c.font = FONT(s);
+    const lines = wrap(c, text, maxW);
+    if (lines.length <= 4 && lines.every(l => c.measureText(l).width <= maxW)) return { size: s, lines };
+  }
+  c.font = FONT(24);
+  return { size: 24, lines: wrap(c, text, maxW) };
+}
+
+function drawFrame(c, recipe, t) {
+  c.fillStyle = recipe.background;
+  c.fillRect(0, 0, W, H);
+  const p = recipe.pieces.find(p => t >= p.start && t < p.end);
+  if (!p) return;
+  const { size, lines } = fitText(c, p.text);
+  c.fillStyle = recipe.textColor;
+  c.textAlign = "center";
+  c.textBaseline = "middle";
+  const lh = size * 1.2;
+  const y0 = H / 2 - ((lines.length - 1) * lh) / 2;
+  lines.forEach((l, i) => c.fillText(l, W / 2, y0 + i * lh));
+}
+
+function drawIdle(c) {
+  c.fillStyle = "#161616";
+  c.fillRect(0, 0, W, H);
+  c.fillStyle = "#f2efe6";
+  c.font = FONT(64);
+  c.textAlign = "center";
+  c.textBaseline = "middle";
+  c.fillText("Because", W / 2, H / 2);
+}
+
+/* ---------- Recording ---------- */
+function pickMime() {
+  if (!window.MediaRecorder) return null;
+  const options = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm", "video/mp4"];
+  return options.find(m => MediaRecorder.isTypeSupported(m)) || null;
+}
+
+async function recordRecipe(recipe, canvas, onProgress) {
+  const c = canvas.getContext("2d");
+  const mime = pickMime();
+  if (!mime || !canvas.captureStream) return null;
+
+  const stream = canvas.captureStream(FPS);
+  const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 1500000 });
+  const chunks = [];
+  rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+  const stopped = new Promise(r => (rec.onstop = r));
+
+  drawFrame(c, recipe, 0);
+  rec.start(250);
+  const t0 = performance.now();
+
+  await new Promise(resolve => {
+    const id = setInterval(() => {
+      const t = (performance.now() - t0) / 1000;
+      if (t >= recipe.duration) {
+        clearInterval(id);
+        drawFrame(c, recipe, recipe.duration - 0.001);
+        onProgress(1);
+        resolve();
+        return;
+      }
+      drawFrame(c, recipe, t);
+      onProgress(t / recipe.duration);
+    }, 1000 / FPS);
+  });
+
+  rec.stop();
+  await stopped;
+  stream.getTracks().forEach(tr => tr.stop());
+  return { blob: new Blob(chunks, { type: mime.split(";")[0] }), mime };
+}
+
+/* ---------- Storage (IndexedDB, falls back to memory) ---------- */
+const store = {
+  db: null,
+  mem: [],
+  init() {
+    return new Promise(resolve => {
+      try {
+        const req = indexedDB.open("because", 1);
+        req.onupgradeneeded = () => req.result.createObjectStore("videos", { keyPath: "id" });
+        req.onsuccess = () => { this.db = req.result; resolve(); };
+        req.onerror = () => resolve();
+      } catch (e) { resolve(); }
+    });
+  },
+  _req(mode, fn) {
+    return new Promise((resolve, reject) => {
+      const os = this.db.transaction("videos", mode).objectStore("videos");
+      const r = fn(os);
+      r.onsuccess = () => resolve(r.result);
+      r.onerror = () => reject(r.error);
+    });
+  },
+  async all() {
+    const items = this.db ? await this._req("readonly", os => os.getAll()) : this.mem.slice();
+    return items.sort((a, b) => b.created - a.created);
+  },
+  async put(item) {
+    if (this.db) {
+      try { return await this._req("readwrite", os => os.put(item)); }
+      catch (e) { console.warn("Save failed, keeping in memory", e); }
+    }
+    this.mem = this.mem.filter(i => i.id !== item.id).concat(item);
+  },
+  async del(id) {
+    if (this.db) { try { await this._req("readwrite", os => os.delete(id)); } catch (e) {} }
+    this.mem = this.mem.filter(i => i.id !== id);
+  }
+};
+
+async function trimGallery() {
+  const items = await store.all();
+  for (const old of items.slice(MAX_GALLERY)) await store.del(old.id);
+}
+
+function nextNumber() {
+  let n = 1;
+  try {
+    n = (parseInt(localStorage.getItem("because-count") || "0", 10) || 0) + 1;
+    localStorage.setItem("because-count", String(n));
+  } catch (e) {
+    n = (window.__becauseCount = (window.__becauseCount || 0) + 1);
+  }
+  return n;
+}
+
+/* ---------- UI ---------- */
+const $ = s => document.querySelector(s);
+const els = {
+  canvas: $("#canvas"), video: $("#video"), gen: $("#generate"), status: $("#status"),
+  bar: $("#bar > div"), details: $("#details"), gallery: $("#gallery"), count: $("#count"), footer: $("#footer")
+};
+const ctx = els.canvas.getContext("2d");
+let busy = false;
+let currentId = null;
+let canvasLoop = null;
+const urls = new Map();
+
+const setStatus = s => (els.status.textContent = s);
+const setProgress = p => (els.bar.style.width = Math.round(p * 100) + "%");
+
+function stopCanvasLoop() {
+  if (canvasLoop) cancelAnimationFrame(canvasLoop);
+  canvasLoop = null;
+}
+function showCanvas() {
+  els.video.pause();
+  els.video.hidden = true;
+  els.canvas.hidden = false;
+}
+function showVideo() {
+  stopCanvasLoop();
+  els.canvas.hidden = true;
+  els.video.hidden = false;
+}
+function playOnCanvas(recipe) {
+  stopCanvasLoop();
+  showCanvas();
+  const t0 = performance.now();
+  const step = () => {
+    const t = ((performance.now() - t0) / 1000) % recipe.duration;
+    drawFrame(ctx, recipe, t);
+    canvasLoop = requestAnimationFrame(step);
+  };
+  step();
+}
+
+// MediaRecorder webm files often report an endless duration; this fixes the seek bar
+els.video.addEventListener("loadedmetadata", () => {
+  const v = els.video;
+  if (v.duration === Infinity) {
+    v.currentTime = 1e101;
+    v.addEventListener("timeupdate", function fix() {
+      v.removeEventListener("timeupdate", fix);
+      v.currentTime = 0;
+      v.play().catch(() => {});
+    });
+  }
+});
+
+function urlFor(item) {
+  if (!item.blob) return null;
+  if (!urls.has(item.id)) urls.set(item.id, URL.createObjectURL(item.blob));
+  return urls.get(item.id);
+}
+
+function fileExt(item) {
+  return item.mime && item.mime.includes("mp4") ? "mp4" : "webm";
+}
+
+function download(item) {
+  const url = urlFor(item);
+  if (!url) return;
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `because-${item.num}.${fileExt(item)}`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function showDetails(item) {
+  els.details.innerHTML = "";
+  const head = document.createElement("div");
+  head.className = "head";
+  const sw = document.createElement("span");
+  sw.className = "swatch";
+  sw.style.background = item.background;
+  const label = document.createElement("span");
+  label.textContent = `Because #${item.num} · ${item.duration}s · ${item.background} · ${item.pieces.length} text${item.pieces.length === 1 ? "" : "s"}`;
+  head.append(sw, label);
+
+  const list = document.createElement("ul");
+  list.className = "pieces";
+  for (const p of item.pieces) {
+    const li = document.createElement("li");
+    const t = document.createElement("span");
+    t.className = "t";
+    t.textContent = `${p.start.toFixed(1)}s – ${p.end.toFixed(1)}s`;
+    const x = document.createElement("span");
+    x.textContent = p.text;
+    li.append(t, x);
+    list.append(li);
+  }
+  els.details.append(head, list);
+}
+
+function openItem(item) {
+  currentId = item.id;
+  showDetails(item);
+  document.querySelectorAll(".card").forEach(c => c.classList.toggle("active", c.dataset.id === item.id));
+  const url = urlFor(item);
+  if (url) {
+    showVideo();
+    if (els.video.src !== url) els.video.src = url;
+    els.video.currentTime = 0;
+    els.video.play().catch(() => {});
+  } else {
+    playOnCanvas(item);
+  }
+}
+
+async function renderGallery() {
+  const items = await store.all();
+  // free URLs for deleted videos
+  for (const [id, url] of urls) {
+    if (!items.some(i => i.id === id)) { URL.revokeObjectURL(url); urls.delete(id); }
+  }
+  els.count.textContent = `${items.length} / ${MAX_GALLERY}`;
+  els.gallery.innerHTML = "";
+  if (!items.length) {
+    const e = document.createElement("p");
+    e.className = "empty";
+    e.textContent = "No videos yet. Your newest 20 will show up here.";
+    els.gallery.append(e);
+    return items;
+  }
+  for (const item of items) {
+    const card = document.createElement("div");
+    card.className = "card" + (item.id === currentId ? " active" : "");
+    card.dataset.id = item.id;
+
+    const thumb = document.createElement("div");
+    thumb.className = "thumb";
+    thumb.style.background = item.background;
+    thumb.style.color = item.textColor;
+    thumb.textContent = item.pieces[0] ? item.pieces[0].text : "";
+    thumb.title = "Play";
+    thumb.onclick = () => !busy && openItem(item);
+
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.innerHTML = `<b>#${item.num}</b><span>${item.duration}s · ${item.pieces.length} text${item.pieces.length === 1 ? "" : "s"}</span>`;
+
+    const row = document.createElement("div");
+    row.className = "row";
+    const play = document.createElement("button");
+    play.textContent = "Play";
+    play.onclick = () => !busy && openItem(item);
+    const dl = document.createElement("button");
+    dl.textContent = "Download";
+    dl.disabled = !item.blob;
+    if (!item.blob) dl.title = "This browser could not record a video file";
+    dl.onclick = () => download(item);
+    row.append(play, dl);
+
+    card.append(thumb, meta, row);
+    els.gallery.append(card);
+  }
+  return items;
+}
+
+async function generate() {
+  if (busy) return;
+  busy = true;
+  els.gen.disabled = true;
+  stopCanvasLoop();
+  showCanvas();
+  setProgress(0);
+
+  const recipe = generateRecipe();
+  const item = {
+    id: Date.now() + "-" + Math.random().toString(36).slice(2, 7),
+    num: nextNumber(),
+    created: Date.now(),
+    ...recipe,
+    blob: null,
+    mime: null
+  };
+  currentId = item.id;
+  showDetails(item);
+  setStatus(`Making Because #${item.num} (${item.duration}s)… keep this tab open.`);
+
+  try {
+    const res = await recordRecipe(recipe, els.canvas, setProgress);
+    if (res && res.blob.size) { item.blob = res.blob; item.mime = res.mime; }
+  } catch (e) {
+    console.error("Recording failed", e);
+  }
+
+  await store.put(item);
+  await trimGallery();
+  await renderGallery();
+  openItem(item);
+  setProgress(1);
+  setStatus(item.blob
+    ? `Because #${item.num} is ready.`
+    : `Because #${item.num} is ready. This browser can't record video files, so it plays as a live preview only.`);
+
+  busy = false;
+  els.gen.disabled = false;
+}
+
+/* ---------- Start ---------- */
+(async function start() {
+  drawIdle(ctx);
+  els.footer.textContent = `Because v0.1 · ${REFERENCE.length} reference sentences · videos are saved in this browser only`;
+  els.gen.onclick = generate;
+  await store.init();
+  const items = await renderGallery();
+  if (items.length) {
+    setStatus("Press Generate to make a video, or play one from the gallery.");
+  }
+})();
+</script>
+</body>
+</html>
