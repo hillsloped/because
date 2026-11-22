@@ -103,6 +103,7 @@
   .row button + button { border-left: 2px solid var(--ink); }
   .empty { color: var(--muted); font-size: 14px; }
   .source { color: var(--muted); }
+  .thumb .tag { background: var(--ink); color: #ffffff; padding: 4px 6px; max-width: 100%; }
   .source summary { cursor: pointer; color: var(--ink); font-weight: 700; margin-top: 4px; }
   .source ol { margin: 6px 0 0 22px; display: grid; gap: 2px; font-size: 13px; }
   .source a { color: var(--ink); }
@@ -112,7 +113,7 @@
 <body>
 <header>
   <h1>Because</h1>
-  <span>v0.2 · simple video maker</span>
+  <span>v0.3 · simple video maker</span>
 </header>
 
 <main>
@@ -321,16 +322,16 @@ function textColorFor(hex) {
 
 /* ---------- Image set: 300 public-domain Wikimedia Commons photos ----------
    On first visit the site asks the Commons API for public-domain featured
-   photos, picks 300 at random and saves that list in the browser. Each image
-   is "learned" once (its color histogram is saved), then reused.            */
-const IMAGE_SET_SIZE = 300, PICK_MIN = 20, PICK_MAX = 30, THUMB_W = 120;
+   photos, picks 300 at random and saves that list in the browser. When a
+   video is made, the chosen images are held in memory (never saved as files). */
+const IMAGE_SET_SIZE = 300, PICK_MIN = 20, PICK_MAX = 30, THUMB_W = 330;
+const SW = 192, SH = 108;          // size of the images "in its mind"
 const IMAGE_CATEGORIES = [
   "Category:Featured photographs in the public domain",
   "Category:Featured pictures in the public domain"
 ];
 const COMMONS_API = "https://commons.wikimedia.org/w/api.php";
-const LS_SET = "because-imageset-v1", LS_LEARNED = "because-learned-v1";
-const TOP_BINS = 32;
+const LS_SET = "because-imageset-v1", LS_URLS = "because-thumburls-v3";
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 function shuffle(a) {
@@ -353,22 +354,23 @@ const filePage = t => "https://commons.wikimedia.org/wiki/" + encodeURIComponent
 
 const images = {
   set: [],
-  learned: {},
+  urls: {},
+  memory: new Map(),   // title -> pixels, only while the page is open
 
   load() {
     try {
       this.set = JSON.parse(localStorage.getItem(LS_SET) || "[]");
-      this.learned = JSON.parse(localStorage.getItem(LS_LEARNED) || "{}");
-    } catch (e) { this.set = []; this.learned = {}; }
+      this.urls = JSON.parse(localStorage.getItem(LS_URLS) || "{}");
+    } catch (e) { this.set = []; this.urls = {}; }
   },
   save() {
     try {
       localStorage.setItem(LS_SET, JSON.stringify(this.set));
-      localStorage.setItem(LS_LEARNED, JSON.stringify(this.learned));
+      localStorage.setItem(LS_URLS, JSON.stringify(this.urls));
     } catch (e) {}
   },
-  learnedCount() {
-    return this.set.filter(t => this.learned[t]).length;
+  rememberedCount() {
+    return this.memory.size;
   },
 
   async api(params) {
@@ -401,102 +403,296 @@ const images = {
     this.save();
   },
 
-  // Small thumbnail URLs for a list of titles (50 per API call)
+  // Thumbnail URLs for a list of titles (50 per API call), remembered between visits
   async thumbs(titles) {
     const out = {};
-    for (let i = 0; i < titles.length; i += 50) {
+    const need = titles.filter(t => !this.urls[t]);
+    for (let i = 0; i < need.length; i += 50) {
       const d = await this.api({
         action: "query", prop: "imageinfo", iiprop: "url", iiurlwidth: String(THUMB_W),
-        titles: titles.slice(i, i + 50).join("|")
+        titles: need.slice(i, i + 50).join("|")
       });
       for (const p of (d.query && d.query.pages) || []) {
         const info = p.imageinfo && p.imageinfo[0];
-        if (info && (info.thumburl || info.url)) out[p.title] = info.thumburl || info.url;
+        if (info && (info.thumburl || info.url)) this.urls[p.title] = info.thumburl || info.url;
       }
     }
+    this.save();
+    for (const t of titles) if (this.urls[t]) out[t] = this.urls[t];
     return out;
   },
 
-  // Load one image and count its pixel colors (16 levels per channel)
-  analyze(url) {
+  // Load one image and keep its pixels in memory (cropped to 16:9, SW x SH)
+  remember(url) {
     return new Promise((resolve, reject) => {
       const img = new Image();
       img.crossOrigin = "anonymous";
-      const timer = setTimeout(() => { img.src = ""; reject(new Error("timeout")); }, 10000);
+      const timer = setTimeout(() => { img.src = ""; reject(new Error("timeout")); }, 12000);
       img.onerror = () => { clearTimeout(timer); reject(new Error("load failed")); };
       img.onload = () => {
         clearTimeout(timer);
         try {
-          const scale = Math.min(1, 64 / Math.max(img.naturalWidth, img.naturalHeight));
-          const w = Math.max(1, Math.round(img.naturalWidth * scale));
-          const h = Math.max(1, Math.round(img.naturalHeight * scale));
+          const iw = img.naturalWidth, ih = img.naturalHeight;
+          const scale = Math.max(SW / iw, SH / ih);
+          const dw = iw * scale, dh = ih * scale;
           const cv = document.createElement("canvas");
-          cv.width = w; cv.height = h;
+          cv.width = SW; cv.height = SH;
           const c = cv.getContext("2d", { willReadFrequently: true });
-          c.drawImage(img, 0, 0, w, h);
-          const px = c.getImageData(0, 0, w, h).data;
-          const bins = new Map();
-          let total = 0;
-          for (let i = 0; i < px.length; i += 4) {
-            if (px[i + 3] < 128) continue;
-            const r = px[i], g = px[i + 1], b = px[i + 2];
-            const key = ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4);
-            let e = bins.get(key);
-            if (!e) bins.set(key, (e = [0, 0, 0, 0]));
-            e[0]++; e[1] += r; e[2] += g; e[3] += b;
-            total++;
-          }
-          if (!total) return reject(new Error("empty image"));
-          const top = [...bins.entries()]
-            .sort((a, b) => b[1][0] - a[1][0])
-            .slice(0, TOP_BINS)
-            .map(([key, e]) => [key, +(e[0] / total).toFixed(4), Math.round(e[1] / e[0]), Math.round(e[2] / e[0]), Math.round(e[3] / e[0])]);
-          resolve(top);
+          c.imageSmoothingQuality = "high";
+          c.drawImage(img, (SW - dw) / 2, (SH - dh) / 2, dw, dh);
+          resolve(fromImageData(c.getImageData(0, 0, SW, SH)));
         } catch (err) { reject(err); }
       };
       img.src = url;
     });
   },
 
-  // Pick 20-30 images and return the most common pixel color among them
-  async backgroundColor(onStatus) {
+  // Pick 20-30 images and hold them in memory
+  async recall(onStatus) {
     onStatus("Getting the image list…");
     await this.ensureSet();
     const n = randInt(PICK_MIN, PICK_MAX);
     const chosen = shuffle(this.set.slice()).slice(0, n);
-    const need = chosen.filter(t => !this.learned[t]);
+    const need = chosen.filter(t => !this.memory.has(t));
     if (need.length) {
-      onStatus(`Looking at ${n} images (${need.length} new)…`);
+      onStatus(`Remembering ${n} images…`);
       const urls = await this.thumbs(need);
       let done = 0;
       await runPool(need, 6, async t => {
         if (urls[t]) {
-          try { this.learned[t] = await this.analyze(urls[t]); } catch (e) {}
+          try { this.memory.set(t, await this.remember(urls[t])); } catch (e) {}
         }
         done++;
-        onStatus(`Looking at ${n} images (${done}/${need.length} new)…`);
+        onStatus(`Remembering ${n} images (${done}/${need.length})…`);
       });
-      this.save();
     }
-    const used = chosen.filter(t => this.learned[t]);
+    const used = chosen.filter(t => this.memory.has(t));
     if (used.length < 3) throw new Error("Too few images loaded");
-
-    // Add up every image's color bins; each image counts equally
-    const sum = new Map();
-    for (const t of used) {
-      for (const [key, frac, r, g, b] of this.learned[t]) {
-        let e = sum.get(key);
-        if (!e) sum.set(key, (e = [0, 0, 0, 0]));
-        e[0] += frac; e[1] += frac * r; e[2] += frac * g; e[3] += frac * b;
-      }
-    }
-    let best = null;
-    for (const e of sum.values()) if (!best || e[0] > best[0]) best = e;
-    const hex = "#" + [best[1], best[2], best[3]]
-      .map(v => Math.round(v / best[0]).toString(16).padStart(2, "0")).join("");
-    return { color: hex, used, picked: n };
+    return { used, pixels: used.map(t => this.memory.get(t)) };
   }
 };
+
+/* ---------- The dream: static → fused static → rebuilt from memory ----------
+   Everything here happens in memory (plain number arrays). Nothing is saved
+   as a file. Pixels are RGB floats, 3 numbers per pixel.                     */
+const STATIC_AMOUNT = 0.8;         // how much of each image becomes static
+const P = 8;                       // patch size used when "recalling"
+const BANK_MAX = 3000;             // how many memory patches it can recall from
+const TURN_EVERY = 0.5;            // seconds between regenerations / turns
+const TURN_X = 24, TURN_Y = 14;    // how far the view turns each time (work pixels)
+
+function fromImageData(id) {
+  const out = new Float32Array(id.width * id.height * 3);
+  for (let i = 0, j = 0; i < id.data.length; i += 4, j += 3) {
+    out[j] = id.data[i]; out[j + 1] = id.data[i + 1]; out[j + 2] = id.data[i + 2];
+  }
+  return out;
+}
+function toCanvas(a, w, h) {
+  const cv = document.createElement("canvas");
+  cv.width = w; cv.height = h;
+  const c = cv.getContext("2d");
+  const id = c.createImageData(w, h);
+  for (let i = 0, j = 0; j < a.length; i += 4, j += 3) {
+    id.data[i] = a[j]; id.data[i + 1] = a[j + 1]; id.data[i + 2] = a[j + 2]; id.data[i + 3] = 255;
+  }
+  c.putImageData(id, 0, 0);
+  return cv;
+}
+
+// 1) Cover an image with static
+function addStatic(a, amount) {
+  const out = new Float32Array(a.length);
+  for (let i = 0; i < a.length; i++) out[i] = a[i] * (1 - amount) + Math.random() * 255 * amount;
+  return out;
+}
+// 2) Fuse many static images into one
+function fuse(list) {
+  const out = new Float32Array(list[0].length);
+  for (const a of list) for (let i = 0; i < a.length; i++) out[i] += a[i];
+  for (let i = 0; i < out.length; i++) out[i] /= list.length;
+  return out;
+}
+// Soften leftover grain so the shapes underneath show (3x3 blur)
+function soften(a, w, h) {
+  const out = new Float32Array(a.length);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) for (let c = 0; c < 3; c++) {
+    let sum = 0, n = 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const xx = x + dx, yy = y + dy;
+      if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+      sum += a[(yy * w + xx) * 3 + c]; n++;
+    }
+    out[(y * w + x) * 3 + c] = sum / n;
+  }
+  return out;
+}
+// Bring back contrast that fusing washes out
+function stretch(a) {
+  const out = new Float32Array(a.length);
+  for (let ch = 0; ch < 3; ch++) {
+    let lo = 255, hi = 0;
+    for (let i = ch; i < a.length; i += 3) { if (a[i] < lo) lo = a[i]; if (a[i] > hi) hi = a[i]; }
+    const k = hi - lo > 1 ? 255 / (hi - lo) : 1;
+    for (let i = ch; i < a.length; i += 3) out[i] = (a[i] - lo) * k;
+  }
+  return out;
+}
+
+// A patch "fingerprint": 4x4 cells of 2x2 pixel averages, RGB = 48 numbers
+function describe(a, w, x, y, out, o) {
+  for (let cy = 0; cy < 4; cy++) for (let cx = 0; cx < 4; cx++) {
+    let r = 0, g = 0, b = 0;
+    for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++) {
+      const p = ((y + cy * 2 + dy) * w + (x + cx * 2 + dx)) * 3;
+      r += a[p]; g += a[p + 1]; b += a[p + 2];
+    }
+    const k = o + (cy * 4 + cx) * 3;
+    out[k] = r / 4; out[k + 1] = g / 4; out[k + 2] = b / 4;
+  }
+}
+
+// The memory bank: lots of small patches from the remembered images
+function buildBank(images) {
+  const spots = [];
+  images.forEach((img, i) => {
+    for (let y = 0; y + P <= SH; y += 4) for (let x = 0; x + P <= SW; x += 4) spots.push([i, x, y]);
+  });
+  shuffle(spots);
+  const n = Math.min(BANK_MAX, spots.length);
+  const desc = new Float32Array(n * 48);
+  for (let k = 0; k < n; k++) { const [i, x, y] = spots[k]; describe(images[i], SW, x, y, desc, k * 48); }
+  return { images, spots: spots.slice(0, n), desc, n };
+}
+
+// Find one of the closest memory patches (a bit of randomness keeps it dreamy)
+const qd = new Float32Array(48);
+function recallPatch(bank, a, w, x, y) {
+  describe(a, w, x, y, qd, 0);
+  const best = [[Infinity, 0], [Infinity, 0], [Infinity, 0]];
+  const { desc, n } = bank;
+  for (let k = 0; k < n; k++) {
+    const o = k * 48;
+    let d = 0;
+    const limit = best[2][0];
+    for (let j = 0; j < 48; j++) { const v = desc[o + j] - qd[j]; d += v * v; if (d >= limit) break; }
+    if (d < limit) {
+      best[2] = [d, k];
+      best.sort((p, q) => p[0] - q[0]);
+    }
+  }
+  const pickK = best[Math.random() < 0.6 ? 0 : Math.random() < 0.6 ? 1 : 2][1];
+  return bank.spots[pickK];
+}
+
+// Rebuild an image from memory, a little more each step.
+// mask (optional): 1 = may change, 0 = keep. fraction: share of patches touched.
+async function dreamSteps(bank, a, w, h, alphas, mask = null, fraction = 1) {
+  for (const alpha of alphas) {
+    const ox = randInt(0, P - 1), oy = randInt(0, P - 1);
+    for (let gy = -oy; gy < h; gy += P) {
+      for (let gx = -ox; gx < w; gx += P) {
+        if (fraction < 1 && Math.random() > fraction) continue;
+        const x = Math.max(0, Math.min(w - P, gx)), y = Math.max(0, Math.min(h - P, gy));
+        if (mask) {
+          let any = false;
+          for (let yy = y; yy < y + P && !any; yy++) for (let xx = x; xx < x + P; xx++) if (mask[yy * w + xx]) { any = true; break; }
+          if (!any) continue;
+        }
+        const [i, sx, sy] = recallPatch(bank, a, w, x, y);
+        const src = bank.images[i];
+        for (let yy = 0; yy < P; yy++) for (let xx = 0; xx < P; xx++) {
+          const di = (y + yy) * w + (x + xx);
+          if (mask && !mask[di]) continue;
+          // soft edges so patches melt together
+          const ex = Math.min(xx + 1, P - xx) / (P / 2), ey = Math.min(yy + 1, P - yy) / (P / 2);
+          const al = alpha * Math.min(1, 0.6 + 0.4 * Math.min(ex, ey));
+          const s = ((sy + yy) * SW + (sx + xx)) * 3, d = di * 3;
+          a[d] += (src[s] - a[d]) * al;
+          a[d + 1] += (src[s + 1] - a[d + 1]) * al;
+          a[d + 2] += (src[s + 2] - a[d + 2]) * al;
+        }
+      }
+    }
+    await sleep(0);
+  }
+}
+
+const DIRECTIONS = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]];
+
+// Build the whole moving background for a video
+async function dreamScene(images, duration, onStatus, onProgress) {
+  const bank = buildBank(images);
+
+  onStatus("Covering memories in static…");
+  const statics = images.map(img => addStatic(img, STATIC_AMOUNT));
+  const fused = stretch(soften(soften(fuse(statics), SW, SH), SW, SH));
+  await sleep(0);
+
+  onStatus("Dreaming the first view…");
+  let view = fused;
+  await dreamSteps(bank, view, SW, SH, [0.35, 0.5, 0.65, 0.8, 0.9, 1, 1]);
+
+  const segments = [];
+  const count = Math.max(1, Math.ceil(duration / TURN_EVERY));
+  let dir = pick(DIRECTIONS);
+  for (let k = 0; k < count; k++) {
+    if (k > 0 && Math.random() < 0.3) dir = pick(DIRECTIONS);
+    onStatus(`Turning and dreaming new sides (${k + 1}/${count})…`);
+    onProgress(k / count);
+
+    const sx = dir[0] * TURN_X, sy = dir[1] * TURN_Y;
+    const cw = SW + Math.abs(sx), ch = SH + Math.abs(sy);
+    const ox = sx < 0 ? -sx : 0, oy = sy < 0 ? -sy : 0;   // where the old view sits
+    const big = new Float32Array(cw * ch * 3);
+    const idea = pick(images);   // a memory to borrow new things from
+    const mask = new Uint8Array(cw * ch);
+    for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++) {
+      const vx = x - ox, vy = y - oy, d = (y * cw + x) * 3;
+      const inside = vx >= 0 && vx < SW && vy >= 0 && vy < SH;
+      const s = (Math.max(0, Math.min(SH - 1, vy)) * SW + Math.max(0, Math.min(SW - 1, vx))) * 3;
+      if (inside) {
+        big[d] = view[s]; big[d + 1] = view[s + 1]; big[d + 2] = view[s + 2];
+      } else {
+        // the new side starts as 80% static on top of the edge colors mixed with a memory
+        mask[y * cw + x] = 1;
+        const m = ((((vy % SH) + SH) % SH) * SW + (((vx % SW) + SW) % SW)) * 3;
+        for (let c = 0; c < 3; c++) {
+          const base = view[s + c] * 0.55 + idea[m + c] * 0.45;
+          big[d + c] = Math.max(0, Math.min(255, base + (Math.random() - 0.5) * 255 * STATIC_AMOUNT));
+        }
+      }
+    }
+    const calm = soften(soften(big, cw, ch), cw, ch);                       // settle the static
+    for (let i = 0; i < mask.length; i++) if (mask[i]) big.set(calm.subarray(i * 3, i * 3 + 3), i * 3);
+    await dreamSteps(bank, big, cw, ch, [0.45, 0.65, 0.85, 1, 1], mask);  // dream the new side
+    await dreamSteps(bank, big, cw, ch, [0.3], null, 0.2);                  // lightly regenerate the rest
+
+    segments.push({ canvas: toCanvas(big, cw, ch), from: [ox, oy], to: [ox + sx, oy + sy] });
+    const nv = new Float32Array(SW * SH * 3);
+    for (let y = 0; y < SH; y++) {
+      const s = ((oy + sy + y) * cw + (ox + sx)) * 3;
+      nv.set(big.subarray(s, s + SW * 3), y * SW * 3);
+    }
+    view = nv;
+  }
+  onProgress(1);
+
+  // average color, for the swatch and gallery
+  let r = 0, g = 0, b = 0;
+  for (let i = 0; i < view.length; i += 3) { r += view[i]; g += view[i + 1]; b += view[i + 2]; }
+  const px = view.length / 3;
+  const avg = "#" + [r, g, b].map(v => Math.round(v / px).toString(16).padStart(2, "0")).join("");
+  return { segments, avg };
+}
+
+function sceneThumb(scene) {
+  const s = scene.segments[0];
+  const cv = document.createElement("canvas");
+  cv.width = SW; cv.height = SH;
+  cv.getContext("2d").drawImage(s.canvas, s.from[0], s.from[1], SW, SH, 0, 0, SW, SH);
+  return cv.toDataURL("image/jpeg", 0.75);
+}
 
 /* ---------- The "AI": decides everything about a video ---------- */
 function generateRecipe(background = randomColor()) {
@@ -542,17 +738,44 @@ function fitText(c, text) {
   return { size: 24, lines: wrap(c, text, maxW) };
 }
 
-function drawFrame(c, recipe, t) {
+function drawBackground(c, recipe, t) {
+  const scene = recipe.scene;
+  if (scene && scene.segments.length) {
+    // every TURN_EVERY seconds a new regenerated view; in between the camera pans toward the new side
+    const segs = scene.segments;
+    const k = Math.min(segs.length - 1, Math.max(0, Math.floor(t / TURN_EVERY)));
+    const s = segs[k];
+    const u = Math.max(0, Math.min(1, (t - k * TURN_EVERY) / TURN_EVERY));
+    const x = s.from[0] + (s.to[0] - s.from[0]) * u;
+    const y = s.from[1] + (s.to[1] - s.from[1]) * u;
+    c.imageSmoothingEnabled = true;
+    c.imageSmoothingQuality = "high";
+    c.drawImage(s.canvas, x, y, SW, SH, 0, 0, W, H);
+    return;
+  }
   c.fillStyle = recipe.background;
   c.fillRect(0, 0, W, H);
+}
+
+function drawFrame(c, recipe, t) {
+  drawBackground(c, recipe, t);
   const p = recipe.pieces.find(p => t >= p.start && t < p.end);
   if (!p) return;
   const { size, lines } = fitText(c, p.text);
-  c.fillStyle = recipe.textColor;
   c.textAlign = "center";
   c.textBaseline = "middle";
   const lh = size * 1.2;
   const y0 = H / 2 - ((lines.length - 1) * lh) / 2;
+  if (recipe.scene) {
+    // outlined text so it reads on any picture
+    c.lineJoin = "round";
+    c.lineWidth = Math.max(4, size * 0.16);
+    c.strokeStyle = "#111111";
+    lines.forEach((l, i) => c.strokeText(l, W / 2, y0 + i * lh));
+    c.fillStyle = "#ffffff";
+  } else {
+    c.fillStyle = recipe.textColor;
+  }
   lines.forEach((l, i) => c.fillText(l, W / 2, y0 + i * lh));
 }
 
@@ -738,6 +961,7 @@ async function recordRecipe(recipe, canvas, onProgress) {
 }
 
 /* ---------- Storage (IndexedDB, falls back to memory) ---------- */
+const scenes = new Map();   // id -> dreamed scene, only while the page is open
 const store = {
   db: null,
   mem: [],
@@ -763,7 +987,9 @@ const store = {
     const items = this.db ? await this._req("readonly", os => os.getAll()) : this.mem.slice();
     return items.sort((a, b) => b.created - a.created);
   },
-  async put(item) {
+  async put(full) {
+    const { scene, ...item } = full;   // the dream itself stays in memory only
+    if (scene) scenes.set(item.id, scene);
     if (this.db) {
       try { return await this._req("readwrite", os => os.put(item)); }
       catch (e) { console.warn("Save failed, keeping in memory", e); }
@@ -875,7 +1101,7 @@ function showDetails(item) {
   sw.className = "swatch";
   sw.style.background = item.background;
   const label = document.createElement("span");
-  label.textContent = `Because #${item.num} · ${item.duration}s · ${item.background} · ${item.pieces.length} text${item.pieces.length === 1 ? "" : "s"}`;
+  label.textContent = `Because #${item.num} · ${item.duration}s · ${item.bgSource ? "dreamed background" : item.background} · ${item.pieces.length} text${item.pieces.length === 1 ? "" : "s"}`;
   head.append(sw, label);
 
   const list = document.createElement("ul");
@@ -896,7 +1122,7 @@ function showDetails(item) {
   if (item.bgSource && item.bgSource.length) {
     const d = document.createElement("details");
     const s = document.createElement("summary");
-    s.textContent = `Background: most common color in ${item.bgSource.length} Wikimedia Commons images`;
+    s.textContent = `Background: dreamed from memory of ${item.bgSource.length} Wikimedia Commons images (80% static, fused, then rebuilt; turns every ${TURN_EVERY}s)`;
     const ol = document.createElement("ol");
     for (const t of item.bgSource) {
       const li = document.createElement("li");
@@ -918,8 +1144,8 @@ function showDetails(item) {
 
 function updateFooter() {
   els.footer.textContent =
-    `Because v0.2 · ${REFERENCE.length} reference sentences · ` +
-    `${images.learnedCount()} / ${IMAGE_SET_SIZE} images learned · ` +
+    `Because v0.3 · ${REFERENCE.length} reference sentences · ` +
+    `${images.rememberedCount()} / ${IMAGE_SET_SIZE} images remembered this visit · ` +
     `images: public-domain photos from Wikimedia Commons · videos are saved in this browser only`;
 }
 
@@ -933,8 +1159,12 @@ function openItem(item) {
     if (els.video.src !== url) els.video.src = url;
     els.video.currentTime = 0;
     els.video.play().catch(() => {});
+  } else if (!item.bgSource || scenes.has(item.id)) {
+    playOnCanvas({ ...item, scene: scenes.get(item.id) });
   } else {
-    playOnCanvas(item);
+    showCanvas();
+    drawIdle(ctx);
+    setStatus("This video's dream was only kept in memory and is gone after reloading.");
   }
 }
 
@@ -962,7 +1192,17 @@ async function renderGallery() {
     thumb.className = "thumb";
     thumb.style.background = item.background;
     thumb.style.color = item.textColor;
-    thumb.textContent = item.pieces[0] ? item.pieces[0].text : "";
+    const label = item.pieces[0] ? item.pieces[0].text : "";
+    if (item.thumb) {
+      thumb.style.backgroundImage = `url(${item.thumb})`;
+      thumb.style.backgroundSize = "cover";
+      const tag = document.createElement("span");
+      tag.className = "tag";
+      tag.textContent = label;
+      thumb.append(tag);
+    } else {
+      thumb.textContent = label;
+    }
     thumb.title = "Play";
     thumb.onclick = () => !busy && openItem(item);
 
@@ -996,23 +1236,28 @@ async function generate() {
   showCanvas();
   setProgress(0);
 
-  let bg = null, bgSource = null;
+  const recipe = generateRecipe(randomColor());
+  let bgSource = null;
   try {
-    const r = await images.backgroundColor(setStatus);
-    bg = r.color;
-    bgSource = r.used;
+    const mem = await images.recall(setStatus);
+    updateFooter();
+    const scene = await dreamScene(mem.pixels, recipe.duration, setStatus, setProgress);
+    recipe.scene = scene;
+    recipe.background = scene.avg;
+    recipe.textColor = "#ffffff";
+    bgSource = mem.used;
   } catch (e) {
-    console.warn("Image background failed, using a random color", e);
+    console.warn("Dreaming failed, using a random color", e);
   }
   updateFooter();
-
-  const recipe = generateRecipe(bg || randomColor());
+  setProgress(0);
   const item = {
     id: Date.now() + "-" + Math.random().toString(36).slice(2, 7),
     num: nextNumber(),
     created: Date.now(),
     ...recipe,
     bgSource,
+    thumb: recipe.scene ? sceneThumb(recipe.scene) : null,
     blob: null,
     mime: null
   };
@@ -1035,7 +1280,7 @@ async function generate() {
   const notes = [];
   if (item.blob && fileExt(item) !== "mp4") notes.push("this browser can't make MP4, so it was saved as WebM");
   if (!item.blob) notes.push("this browser can't make video files, so it plays as a live preview only");
-  if (!bgSource) notes.push("couldn't reach Wikimedia, so the background is a random color");
+  if (!bgSource) notes.push("couldn't reach Wikimedia, so the background is a plain random color");
   setStatus(`Because #${item.num} is ready.` + (notes.length ? " Note: " + notes.join("; ") + "." : ""));
 
   busy = false;
